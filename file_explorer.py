@@ -1,250 +1,323 @@
 import os
 import tkinter as tk
-from tkinter import messagebox
-import win32com.client
+from tkinter import ttk, messagebox
+import argparse
 import subprocess
 import psutil
-import ctypes
 from PIL import Image, ImageTk
-import win32gui
-import win32con
-import argparse
-from screeninfo import get_monitors
+import configparser
 
-# Function to check if the file is a media file
+# --- Helper Functions ---
 def is_media_file(file_path):
-    media_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.avi', '.mkv', '.mov')
-    file_extension = os.path.splitext(file_path)[1].lower()
-    return file_extension in media_extensions
+    media_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.avi', '.mkv', '.mov', '.mp3', '.wav')
+    return os.path.splitext(file_path)[1].lower() in media_extensions
 
-# Function to get all .lnk, .exe, and media files in the folder
-def get_files_in_folder(folder_path):
-    files = []
-    for file in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, file)
-        file_extension = os.path.splitext(file)[1].lower()
+def get_files_recursively(folder_path):
+    apps = []
+    media = []
+    print(f"Scanning folder: {folder_path}")
+    for root, _, file_names in os.walk(folder_path):
+        for file in file_names:
+            file_path = os.path.join(root, file)
+            file_extension = os.path.splitext(file)[1].lower()
 
-        # Check for .lnk shortcut files
-        if os.path.isfile(file_path) and file_extension == '.lnk':
-            target, icon_location = get_target_from_shortcut(file_path)
-            if target:
-                files.append({'type': 'link', 'name': file, 'target': target, 'icon_location': icon_location})
+            if os.path.isfile(file_path):
+                if file_extension == '.exe':
+                    apps.append({'type': 'app', 'name': file, 'path': file_path})
+                elif is_media_file(file_path):
+                    media.append({'type': 'media', 'name': file, 'path': file_path})
+    
+    print(f"Found {len(apps)} apps and {len(media)} media files.")
+    return apps, media
 
-        # Check for .exe files
-        elif os.path.isfile(file_path) and file_extension == '.exe':
-            files.append({'type': 'app', 'name': file, 'path': file_path})
-
-        # Check for media files
-        elif os.path.isfile(file_path) and is_media_file(file_path):
-            files.append({'type': 'media', 'name': file, 'path': file_path})
-
-    return files
-
-# Function to get the target path from a shortcut (.lnk) file
-def get_target_from_shortcut(lnk_file_path):
-    try:
-        shell = win32com.client.Dispatch("WScript.Shell")
-        shortcut = shell.CreateShortCut(lnk_file_path)
-        return shortcut.TargetPath, shortcut.IconLocation
-    except Exception as e:
-        print(f"Error extracting target from shortcut {lnk_file_path}: {e}")
-        return None, None
-
-# Function to check if a process is running based on the executable path
 def is_process_running(executable_path):
     for proc in psutil.process_iter(attrs=['pid', 'name']):
-        try:
-            if executable_path.lower() in proc.info['name'].lower():
-                return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
+        if executable_path.lower() in proc.info['name'].lower():
+            return True
     return False
 
-# Function to open the shortcut target when clicked
-def open_shortcut_target(target_path):
+def get_file_icon(file_path):
+    """Get the app's or media file's icon (or placeholder)"""
     try:
-        subprocess.Popen(target_path)
-        print(f"Launching: {target_path}")
+        if file_path.lower().endswith(('jpg', 'jpeg', 'png', 'gif')):
+            image = Image.open(file_path)
+            image.thumbnail((30, 30))  # Resize for preview
+            return ImageTk.PhotoImage(image)
+        elif file_path.lower().endswith(('.exe', '.lnk')):
+            # Placeholder for executable file (we can use an app icon)
+            return ImageTk.PhotoImage(Image.new('RGB', (30, 30), color=(50, 50, 50)))  # Dark square as placeholder
     except Exception as e:
-        print(f"Error launching {target_path}: {e}")
+        print(f"Error getting icon for {file_path}: {e}")
+        return ImageTk.PhotoImage(Image.new('RGB', (30, 30), color=(50, 50, 50)))  # Dark square as placeholder
 
-# Function to open media files when clicked
-def open_media_file(media_path):
+# --- Style Parsing ---
+def load_style_config(file_path):
+    # Check if style_config.ini exists, otherwise fallback to hardcoded values
+    if not os.path.exists(file_path):
+        print("INI file not found, using hardcoded style values.")
+        return {
+            "general": {
+                "background_color": "#6917d4",
+                "sidebar_color": "#46128a",
+                "button_color": "#46128a",
+                "text_color": "#000000",
+                "launcher_title": "My Launcher",
+                "title_font_size": 16,
+                "button_roundness": 1
+            },
+            "treeview": {
+                "background_color": "#46128a",
+                "foreground_color": "#52199c",
+                "row_height": 30,
+                "field_background_color": "#1a0440",
+                "selected_background_color": "#070121",
+                "font_size": 12,
+                "normal_font_color": "#000000",
+                "border_color": "#000000",
+            },
+            "column": {
+                "column_title_background": "#46128a"
+            },
+            "sidebar": {
+                "font_size": 12
+            },
+            "padding": {
+                "inner_padding": 10
+            }
+        }
+
+    # If INI exists, load the config
+    config = configparser.ConfigParser()
+    config.read(file_path)
+
+    style = {
+        "general": {
+            "background_color": config.get("general", "background_color", fallback="#FFFFFF"),
+            "sidebar_color": config.get("general", "sidebar_color", fallback="#333333"),
+            "button_color": config.get("general", "button_color", fallback="#444444"),
+            "text_color": config.get("general", "text_color", fallback="#FFFFFF"),
+            "launcher_title": config.get("general", "launcher_title", fallback="All-in-One Launcher"),
+            "title_font_size": config.getint("general", "title_font_size", fallback=16),
+            "button_roundness": config.getfloat("general", "button_roundness", fallback=1)
+        },
+        "treeview": {
+            "background_color": config.get("treeview", "background_color", fallback="#333333"),
+            "foreground_color": config.get("treeview", "foreground_color", fallback="#FFFFFF"),
+            "row_height": config.getint("treeview", "row_height", fallback=30),
+            "field_background_color": config.get("treeview", "field_background_color", fallback="#2E2E2E"),
+            "selected_background_color": config.get("treeview", "selected_background_color", fallback="#555555"),
+            "font_size": config.getint("treeview", "font_size", fallback=12),
+            "normal_font_color": config.get("treeview", "normal_font_color", fallback="#000000"),
+            "border_color": config.get("treeview", "border_color", fallback="#000000"),
+        },
+        "column": {
+            "column_title_background": config.get("column", "column_title_background", fallback="#46128a")
+        },
+        "sidebar": {
+            "font_size": config.getint("sidebar", "font_size", fallback=12)
+        },
+        "padding": {
+            "inner_padding": config.getint("padding", "inner_padding", fallback=10)
+        }
+    }
+
+    return style
+
+# --- Launcher UI ---
+def apply_filter(filter_func, apps, media, file_tree, filters):
+    global filtered_files  # Declare as global to update it across functions
+    file_tree.delete(*file_tree.get_children())  # Clear the current treeview items
+    
+    # Filter files based on the selected filter function
+    filtered_files = apps + media if filter_func == filters["All"] else (
+        [file for file in apps if filter_func(file)] if filter_func == filters["Apps"] else 
+        [file for file in media if filter_func(file)]
+    )
+
+    # List to store icons and file paths for the double-click action
+    cached_files = {}
+
+    # Add the filtered files to the Treeview
+    for file in filtered_files:
+        status = "N/A"  # Set a simple status instead of checking for running processes
+        icon = get_file_icon(file['path'])  # Get icon
+
+        # If no valid icon is returned, set it to a placeholder
+        if icon is None:
+            icon = ImageTk.PhotoImage(Image.new('RGB', (30, 30), color=(50, 50, 50)))  # Dark square placeholder
+        
+        # Remove the file extension from the file name
+        file_name_without_extension = os.path.splitext(file['name'])[0]
+        
+        # Insert the filtered file data into the Treeview (without the status)
+        item = file_tree.insert("", "end", values=(file['type'], file_name_without_extension), tags=(file['type'],), image=icon)
+
+        # Store the file name and path in the cache (key-value pair)
+        cached_files[item] = file['path']  # Use item ID as key
+
+    # Bind double-click event for launching or opening apps/media
+    def on_treeview_double_click(event):
+        # Get the selected item from the treeview
+        item = file_tree.selection()
+        if item:
+            file_path = cached_files.get(item[0])  # Retrieve the file path using item ID
+            if file_path:
+                open_file(file_path)
+
+    # Bind the double-click event to the treeview
+    file_tree.bind("<Double-1>", on_treeview_double_click)
+
+def open_file(file_path):
+    """Open app or media based on file path."""
     try:
-        subprocess.Popen(media_path, shell=True)
-        print(f"Opening media file: {media_path}")
+        if file_path.lower().endswith('.exe'):
+            # Run executable (launch app)
+            subprocess.Popen(file_path, shell=True)
+            print(f"Launching app: {file_path}")
+        elif is_media_file(file_path):
+            # Open media file with the default associated program (e.g., image viewer, media player)
+            os.startfile(file_path)
+            print(f"Opening media: {file_path}")
     except Exception as e:
-        print(f"Error opening media file {media_path}: {e}")
+        print(f"Error opening {file_path}: {e}")
 
-# Function to open executable files when clicked
-def open_exe_file(exe_path):
-    try:
-        subprocess.Popen(exe_path)
-        print(f"Opening executable file: {exe_path}")
-    except Exception as e:
-        print(f"Error opening executable file {exe_path}: {e}")
+# --- Design (UI) Part ---
+def calculate_luminance(color_hex):
+    """Calculate luminance of the background color."""
+    color_hex = color_hex.lstrip("#")  # Remove '#' if present
+    r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
+    
+    # Apply luminance formula (using standard luminance coefficients for RGB)
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return luminance
 
-# Function to apply hover and click effects without smooth transition
-def apply_hover_and_click_effect(button, initial_size, hover_size, click_size, initial_color, hover_color, click_color):
-    def on_hover(event):
-        button.configure(width=hover_size[0], height=hover_size[1], bg=hover_color)
+def get_contrasting_text_color(background_color):
+    """Return black or white text color based on the background color luminance."""
+    luminance = calculate_luminance(background_color)
+    if luminance < 128:  # Dark background (luminance < 128)
+        return "#FFFFFF"  # White text
+    else:  # Light background
+        return "#000000"  # Black text
 
-    def on_click(event):
-        button.configure(width=click_size[0], height=click_size[1], bg=click_color)
-
-    def on_leave(event):
-        button.configure(width=initial_size[0], height=initial_size[1], bg=initial_color)
-
-    button.bind("<Enter>", on_hover)
-    button.bind("<Leave>", on_leave)
-    button.bind("<ButtonPress>", on_click)
-
-# Function to get the system theme (dark or light)
-def get_system_theme():
-    try:
-        registry_key = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-        reg_value = ctypes.windll.user32.GetSysColor(30)  # Get the color value for the theme
-        if reg_value == 0:
-            return "light"
-        else:
-            return "dark"
-    except Exception as e:
-        print(f"Error detecting system theme: {e}")
-        return "light"
-
-# Function to apply dark or light theme to the UI
-def apply_theme(root, frame, buttons, theme):
-    if theme == "dark":
-        root.configure(bg="#2C2F38")
-        frame.configure(bg="#2C2F38")
-        for button in buttons:
-            button.configure(bg="#3D4758", fg="white", relief="flat", font=("Segoe UI", 12))
-    else:
-        root.configure(bg="white")
-        frame.configure(bg="white")
-        for button in buttons:
-            button.configure(bg="#E0E0E0", fg="black", relief="flat", font=("Segoe UI", 12))
-
-# Function to extract the icon from the shortcut
-def get_icon_image(icon_location):
-    try:
-        icon_path, icon_index = icon_location.split(',')
-        icon_index = int(icon_index)
-        hicon = win32gui.ExtractIcon(0, icon_path, icon_index)
-        if hicon:
-            icon = Image.frombytes("RGBA", (32, 32), win32gui.GetIconInfo(hicon))
-            return icon
-        else:
-            print(f"Error extracting icon: Invalid handle for {icon_path}")
-            return None
-    except Exception as e:
-        print(f"Error extracting icon: {e}")
-        return None
-
-def move_window_to_cursor(root):
-    root.update_idletasks()  # Essential: Update window dimensions
-
-    window_width = root.winfo_width()
-    window_height = root.winfo_height()
-
-    # Get primary monitor info
-    monitors = get_monitors()
-    if monitors:
-        primary_monitor = monitors[0]  # Assuming the first monitor is primary
-        screen_width = primary_monitor.width
-        screen_height = primary_monitor.height
-        x = root.winfo_pointerx() - window_width // 2
-        y = root.winfo_pointery() - window_height // 2
-
-        padding = 10
-
-        # Ensure window stays within screen bounds
-        x = max(padding, min(x, screen_width - window_width - padding))
-        y = max(padding, min(y, screen_height - window_height - padding))
-
-        root.geometry(f"+{x}+{y}")
-    else:
-        print("No monitors found.")
-
-# Main function to create the GUI
-def create_gui(folder_path):
+def create_steam_like_launcher(folder_path, style, apps, media):
     root = tk.Tk()
-    root.title("File Explorer")
-    root.geometry("400x500")  # Fixed window size
-    root.resizable(False, False)
+    root.title(style['general']['launcher_title'])
+    root.geometry("1000x600")
+    root.configure(bg=style['general']['background_color'])
 
-    theme = get_system_theme()
+    style_ = ttk.Style()
+    style_.theme_use("clam")
+    
+    # Get contrasting text color for Treeview
+    treeview_text_color = get_contrasting_text_color(style['treeview']['background_color'])
 
-    frame = tk.Frame(root)
-    frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+    style_.configure("Treeview", 
+                    background=style['treeview']['background_color'],
+                    foreground=treeview_text_color,
+                    rowheight=style['treeview']['row_height'],
+                    fieldbackground=style['treeview']['field_background_color'])
+    style_.map("Treeview", background=[("selected", style['treeview']['selected_background_color'])])
 
-    files = get_files_in_folder(folder_path)
+    # --- Sidebar Frame --- 
+    sidebar = tk.Frame(root, bg=style['general']['sidebar_color'], width=200)
+    sidebar.pack(side=tk.LEFT, fill=tk.Y)
 
-    if not files:
-        messagebox.showerror("Error", "No files found in the folder.")
-        return
+    # --- Content Area --- 
+    content_area = tk.Frame(root, bg=style['general']['background_color'])
+    content_area.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-    buttons = []
+    # --- Treeview with custom columns --- 
+    def create_treeview_with_custom_columns(content_area, style):
+        file_tree = ttk.Treeview(content_area, columns=("Type", "Name"), show="headings")
+        file_tree.heading("Type", text="Type")
+        file_tree.heading("Name", text="Name")
 
-    for file in files:
-        name_without_extension = os.path.splitext(file['name'])[0]
+        file_tree.column("Type", width=100)
+        file_tree.column("Name", width=600)  # Adjusted width for Name column
 
-        # Prepare label with type information
-        if file['type'] == 'media':
-            label = f"(video) {name_without_extension}" if file['path'].endswith(('.mp4', '.avi', '.mkv')) else f"(audio) {name_without_extension}"
-        elif file['type'] == 'app':
-            label = f"(app) {name_without_extension}"
-        else:
-            label = f"(link) {name_without_extension}"
+        style_.configure("Treeview",
+                        background=style['treeview']['background_color'],
+                        foreground=treeview_text_color,  # Use dynamic contrasting text color
+                        rowheight=style['treeview']['row_height'],
+                        fieldbackground=style['treeview']['field_background_color'],
+                        font=("Helvetica", style['treeview']['font_size']),
+                        borderwidth=2,  # Treeview border width
+                        relief="solid",
+                        bordercolor=style['treeview']['border_color'])  # Treeview border color
 
-        if file['type'] == 'link':
-            target_path = file['target']
-            icon_location = file['icon_location']
-            icon = get_icon_image(icon_location)
-            if icon:
-                icon = icon.resize((32, 32), Image.Resampling.LANCZOS)
-                icon = ImageTk.PhotoImage(icon)
-                button = tk.Button(frame, text=label, image=icon, width=30, height=2, compound="left", command=lambda target=target_path: open_shortcut_target(target))
-                button.image = icon
-            else:
-                button = tk.Button(frame, text=label, width=30, height=2, command=lambda target=target_path: open_shortcut_target(target))
+        style_.map("Treeview", background=[("selected", style['treeview']['selected_background_color'])])
 
-        elif file['type'] == 'media':
-            media_path = file['path']
-            button = tk.Button(frame, text=label, width=30, height=2, command=lambda media=media_path: open_media_file(media))
+        # Apply styles to the column headers (titles)
+        style_.configure("Treeview.Heading",
+                        font=("Helvetica", style['treeview']['font_size'], 'bold'),
+                        background=style['column']['column_title_background'],
+                        foreground=treeview_text_color)  # Column title text color
 
-        elif file['type'] == 'app':
-            exe_path = file['path']
-            button = tk.Button(frame, text=label, width=30, height=2, command=lambda exe=exe_path: open_exe_file(exe))
+        # Disable any hover or click effects on column headers
+        style_.map("Treeview.Heading", background=[('active', style['column']['column_title_background'])])
 
-        initial_size = (30, 2)
-        hover_size = (35, 3)
-        click_size = (28, 2)
-        initial_color = "#E0E0E0"
-        hover_color = "#D3D3D3"
-        click_color = "#B0B0B0"
+        # Create a tag for the default row text color
+        file_tree.tag_configure("normal", foreground=treeview_text_color)  # Row text color
 
-        if theme == "dark":
-            initial_color = "#3D4758"
-            hover_color = "#4d596e"
-            click_color = "#2c3340"
+        # Add rows to the Treeview
+        file_tree.pack(fill=tk.BOTH, expand=True, padx=style['padding']['inner_padding'], pady=style['padding']['inner_padding'])
 
-        apply_hover_and_click_effect(button, initial_size, hover_size, click_size, initial_color, hover_color, click_color)
+        return file_tree
 
-        button.pack(fill=tk.X, pady=5)
-        buttons.append(button)
+    file_tree = create_treeview_with_custom_columns(content_area, style)
 
-    apply_theme(root, frame, buttons, theme)
+    # --- Sidebar Buttons --- 
+    filters = {"All": lambda x: True, "Apps": lambda x: x['type'] == 'app', "Media": lambda x: x['type'] == 'media'}
+    
+    def create_sidebar_buttons(apps, media, file_tree):
+        # Clear existing buttons
+        for widget in sidebar.winfo_children():
+            widget.destroy()
 
-    # Move the window based on cursor position and keep it within bounds
-    move_window_to_cursor(root)
+        # Add sidebar buttons for filters (All, Apps, Media)
+        filters = {"All": lambda x: True, "Apps": lambda x: x['type'] == 'app', "Media": lambda x: x['type'] == 'media'}
+
+        for filter_name, filter_func in filters.items():
+            button_text_color = get_contrasting_text_color(style['general']['sidebar_color'])
+
+            button = tk.Button(sidebar, 
+                            text=filter_name, 
+                            command=lambda f=filter_func: apply_filter(f, apps, media, file_tree, filters), 
+                            font=(style['sidebar']['font_size']),
+                            fg=button_text_color,  # Use dynamic contrasting text color
+                            bg=style['general']['sidebar_color'])
+            button.pack(fill=tk.X)
+
+        # Add the actual files (app/media) to the Treeview
+        for file in apps + media:
+            # Add all apps/media to the Treeview as separate rows with appropriate icons and file details
+            file_tree.insert("", "end", values=(file['type'], file['name'], "Idle" if file['type'] == 'app' else "N/A"),
+                            tags=(file['type'],))
+            
+        # Step 4: Apply initial filter to display all files
+        apply_filter(filters["All"], apps, media, file_tree, filters)
+
+
+    # Pass the file_tree to the create_sidebar_buttons function
+    create_sidebar_buttons(apps, media, file_tree)
+
+    # Step 4: Apply initial filter to display all files
+    apply_filter(filters["All"], apps, media, file_tree, filters)
 
     root.mainloop()
 
-# Run the script
+# Run the launcher with the scanned apps and media
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Open shortcut files (.lnk) from a given folder.")
-    parser.add_argument("folder_path", type=str, help="Path to the folder containing .lnk shortcut files.")
+    parser = argparse.ArgumentParser(description="File Explorer Launcher")
+    parser.add_argument("folder", type=str, help="Folder path to scan for applications and media files")
     args = parser.parse_args()
 
-    create_gui(args.folder_path)
+    # Step 1: Scan the folder for apps and media files
+    apps, media = get_files_recursively(args.folder)
+
+    # Step 2: Load the style configuration
+    style_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'style_config.ini')
+    style = load_style_config(style_config_path)
+
+    # Step 3: Create and launch the UI
+    create_steam_like_launcher(args.folder, style, apps, media)
