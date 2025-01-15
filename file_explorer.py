@@ -6,6 +6,8 @@ import subprocess
 import psutil
 from PIL import Image, ImageTk
 import configparser
+import pythoncom
+from win32com.client import Dispatch
 
 # --- Helper Functions ---
 def is_media_file(file_path):
@@ -22,7 +24,7 @@ def get_files_recursively(folder_path):
             file_extension = os.path.splitext(file)[1].lower()
 
             if os.path.isfile(file_path):
-                if file_extension == '.exe':
+                if file_extension in ('.exe', '.lnk'):  # Include .lnk files as apps
                     apps.append({'type': 'app', 'name': file, 'path': file_path})
                 elif is_media_file(file_path):
                     media.append({'type': 'media', 'name': file, 'path': file_path})
@@ -35,6 +37,55 @@ def is_process_running(executable_path):
         if executable_path.lower() in proc.info['name'].lower():
             return True
     return False
+
+def resolve_lnk(lnk_path):
+    """Resolve the target path and properties of a .lnk file."""
+    try:
+        shell = Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortcut(lnk_path)
+        target_path = shortcut.TargetPath
+        arguments = shortcut.Arguments
+        working_directory = shortcut.WorkingDirectory
+        description = shortcut.Description  # May contain AppUserModelID for Store apps
+        return target_path, arguments, working_directory, description
+    except Exception as e:
+        print(f"Error resolving .lnk file: {e}")
+        return None, None, None, None
+
+
+def is_store_app(description):
+    """Check if a shortcut description indicates a Microsoft Store app."""
+    return "!" in description if description else False
+
+
+def open_file(file_path):
+    """Open app or media based on file path."""
+    try:
+        if file_path.lower().endswith('.lnk'):
+            # Resolve .lnk to its target path
+            target_path, arguments, working_directory, description = resolve_lnk(file_path)
+            if target_path or description:
+                if is_store_app(description):
+                    # Exclude Microsoft Store app shortcuts
+                    print(f"Skipping Microsoft Store app shortcut: {file_path}")
+                elif os.path.exists(target_path):
+                    # Handle traditional shortcuts
+                    print(f"Launching shortcut target: {target_path}")
+                    subprocess.Popen(f'"{target_path}" {arguments}', cwd=working_directory, shell=True)
+                else:
+                    print(f"Invalid shortcut or target not found: {file_path}")
+            else:
+                print(f"Could not resolve .lnk file: {file_path}")
+        elif file_path.lower().endswith('.exe'):
+            # Run executable (launch app)
+            subprocess.Popen(file_path, shell=True)
+            print(f"Launching app: {file_path}")
+        else:
+            # Fallback for other file types
+            os.startfile(file_path)
+            print(f"Opening file: {file_path}")
+    except Exception as e:
+        print(f"Error opening {file_path}: {e}")
 
 def get_file_icon(file_path):
     """Get the app's or media file's icon (or placeholder)"""
@@ -166,20 +217,6 @@ def apply_filter(filter_func, apps, media, file_tree, filters):
 
     # Bind the double-click event to the treeview
     file_tree.bind("<Double-1>", on_treeview_double_click)
-
-def open_file(file_path):
-    """Open app or media based on file path."""
-    try:
-        if file_path.lower().endswith('.exe'):
-            # Run executable (launch app)
-            subprocess.Popen(file_path, shell=True)
-            print(f"Launching app: {file_path}")
-        elif is_media_file(file_path):
-            # Open media file with the default associated program (e.g., image viewer, media player)
-            os.startfile(file_path)
-            print(f"Opening media: {file_path}")
-    except Exception as e:
-        print(f"Error opening {file_path}: {e}")
 
 # --- Design (UI) Part ---
 def calculate_luminance(color_hex):
